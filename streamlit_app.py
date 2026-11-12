@@ -1,1239 +1,1500 @@
-import html
-import re
-import urllib.parse
-from typing import Dict, List, Tuple
-
-import requests
 import streamlit as st
 import streamlit.components.v1 as components
-from bs4 import BeautifulSoup, Tag
 
-# -----------------------------------------------------------------------------
-# 1. PAGE CONFIGURATION (Must be the first Streamlit command)
-# -----------------------------------------------------------------------------
 st.set_page_config(
     page_title="Utopia Education",
-    page_icon="📚",
+    page_icon="🎓",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
 
-# -----------------------------------------------------------------------------
-# 2. CONSTANTS, AD-BLOCKER RULES & PORTAL CONTENT
-# -----------------------------------------------------------------------------
-AD_DOMAINS = (
-    "doubleclick.net",
-    "googlesyndication.com",
-    "google-analytics.com",
-    "googletagmanager.com",
-    "googletagservices.com",
-    "adservice.google.com",
-    "pagead2.googlesyndication.com",
-    "adnxs.com",
-    "taboola.com",
-    "outbrain.com",
-    "criteo.com",
-    "criteo.net",
-    "amazon-adsystem.com",
-    "popads.net",
-    "popcash.net",
-    "propellerads.com",
-    "adsterra.com",
-    "mgid.com",
-    "revcontent.com",
-    "pubmatic.com",
-    "rubiconproject.com",
-    "openx.net",
-    "casalemedia.com",
-    "moatads.com",
-    "scorecardresearch.com",
-    "quantserve.com",
-    "hotjar.com",
-    "connect.facebook.net",
-    "ads-twitter.com",
-    "bat.bing.com",
-    "zedo.com",
-    "adroll.com",
-    "bidswitch.net",
-    "sharethrough.com",
-    "triplelift.com",
-    "mediavine.com",
-    "adthrive.com",
-    "ezoic.net",
-    "smartadserver.com",
-    "advertising.com",
-    "yieldmo.com",
-    "indexexchange.com",
-    "33across.com",
-    "sovrn.com",
-)
-
-AD_TOKEN_PATTERN = re.compile(
-    r"(^|[-_])(ad|ads|advert|advertisement|adsbygoogle|google_ads|div-gpt-ad|"
-    r"sponsor|sponsored|taboola|outbrain|banner-ad|ad-banner|ad-slot|ad-unit|"
-    r"ad-container|ad-wrapper|popup-ad|popunder|interstitial-ad)($|[-_])",
-    re.IGNORECASE,
-)
-
-AD_SCRIPT_SIGNATURES = (
-    "adsbygoogle",
-    "googletag.cmd",
-    "googletag.display",
-    "fbq(",
-    "gtag('config'",
-    'gtag("config"',
-    "_taboola",
-    "outbrain",
-    "popads",
-    "criteo",
-    "amazon-adsystem",
-    "prebid",
-    "pbjs.",
-)
-
-COSMETIC_FILTER_CSS = """
-<style id="utopia-adblock-cosmetic">
-  ins.adsbygoogle,
-  [id*="google_ads"],
-  [id*="div-gpt-ad"],
-  [id*="taboola"],
-  [id*="outbrain"],
-  [class*="banner-ad"],
-  [class*="ad-banner"],
-  [class*="ad-slot"],
-  [class*="ad-container"],
-  [class*="ad-wrapper"],
-  [class*="sponsored-content"],
-  [data-ad],
-  [data-ad-slot],
-  [data-google-query-id],
-  iframe[src*="doubleclick"],
-  iframe[src*="googlesyndication"],
-  iframe[src*="taboola"],
-  iframe[src*="outbrain"],
-  .adsbygoogle,
-  .ad-overlay,
-  .popup-overlay {
-    display: none !important;
-    visibility: hidden !important;
-    height: 0 !important;
-    min-height: 0 !important;
-    max-height: 0 !important;
-    overflow: hidden !important;
-    pointer-events: none !important;
-  }
-</style>
-"""
-
-SUBJECT_CARDS = [
-    {
-        "icon": "📐",
-        "title": "Math & Algebra",
-        "desc": "Interactive equations, algebra step-by-step guides, geometry, and calculus references.",
-        "tag": "mathsisfun.com",
-        "url": "https://www.mathsisfun.com/algebra/index.html",
-    },
-    {
-        "icon": "🏛️",
-        "title": "Historical Research",
-        "desc": "World civilizations, primary historical archives, timelines, and documented eras.",
-        "tag": "wikipedia.org",
-        "url": "https://en.wikipedia.org/wiki/Portal:History",
-    },
-    {
-        "icon": "🔬",
-        "title": "Science Lab",
-        "desc": "Open-access textbooks and modules for Biology, Chemistry, Physics, and Astronomy.",
-        "tag": "openstax.org",
-        "url": "https://openstax.org/subjects/science",
-    },
-    {
-        "icon": "📖",
-        "title": "Literature Themes",
-        "desc": "Classic novels, poetry collections, dramatic works, and literary analysis resources.",
-        "tag": "gutenberg.org",
-        "url": "https://www.gutenberg.org/",
-    },
-    {
-        "icon": "🌍",
-        "title": "Social Studies",
-        "desc": "Civics, government systems, economics, human geography, and cultural studies.",
-        "tag": "wikipedia.org",
-        "url": "https://en.wikipedia.org/wiki/Portal:Social_sciences",
-    },
-    {
-        "icon": "✍️",
-        "title": "Essay Writing",
-        "desc": "Thesis development, academic rhetoric, grammar mechanics, and MLA/APA citations.",
-        "tag": "owl.purdue.edu",
-        "url": "https://owl.purdue.edu/owl/general_writing/index.html",
-    },
-]
-
-DECOY_WIKIPEDIA_HTML = """
-<div id="utopia-decoy-page" style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Lato, Helvetica, Arial, sans-serif; background: #ffffff; color: #202122; margin: 0; padding: 0; line-height: 1.6; min-height: 100vh;">
-  <div style="background: #f8f9fa; border-bottom: 1px solid #a2a9b1; padding: 10px 24px; display: flex; align-items: center; justify-content: space-between;">
-    <div style="display: flex; align-items: center; gap: 14px;">
-      <span style="font-size: 20px; font-weight: 700; font-family: Georgia, serif; letter-spacing: 0.5px;">WIKIPEDIA</span>
-      <span style="font-size: 12px; color: #54595d;">The Free Encyclopedia</span>
-    </div>
-    <div style="display: flex; align-items: center; gap: 12px;">
-      <input type="text" value="George Washington" readonly style="border: 1px solid #a2a9b1; border-radius: 2px; padding: 5px 10px; font-size: 13px; width: 240px; background: #fff; color: #202122;" />
-      <span style="font-size: 12px; color: #3366cc; cursor: pointer;" onclick="window.utopiaRestore && window.utopiaRestore()">Log in</span>
-    </div>
-  </div>
-  <div style="max-width: 1180px; margin: 0 auto; padding: 20px 28px; display: grid; grid-template-columns: 190px 1fr; gap: 28px;">
-    <aside style="font-size: 13px; color: #202122; border-right: 1px solid #eaecf0; padding-right: 14px;">
-      <div style="font-weight: 700; border-bottom: 1px solid #eaecf0; padding-bottom: 6px; margin-bottom: 10px;">Contents</div>
-      <ul style="list-style: none; padding: 0; margin: 0; line-height: 1.9; color: #3366cc;">
-        <li>(Top)</li>
-        <li>1 Early life (1732–1752)</li>
-        <li>2 Colonial military career</li>
-        <li>3 American Revolution</li>
-        <li>4 Presidency (1789–1797)</li>
-        <li>5 Retirement and death</li>
-        <li>6 Legacy and memorials</li>
-        <li>7 References</li>
-      </ul>
-    </aside>
-    <main>
-      <h1 style="font-family: Georgia, 'Times New Roman', serif; font-size: 29px; font-weight: 400; border-bottom: 1px solid #a2a9b1; margin: 0 0 8px 0; padding-bottom: 4px;">George Washington</h1>
-      <div style="font-size: 12.5px; color: #54595d; margin-bottom: 16px;">From Wikipedia, the free encyclopedia</div>
-      <div style="float: right; width: 260px; background: #f8f9fa; border: 1px solid #a2a9b1; padding: 10px; margin: 0 0 16px 20px; font-size: 12.5px;">
-        <div style="text-align: center; font-weight: 700; font-size: 14px; background: #eaecf0; padding: 5px; margin-bottom: 8px;">George Washington</div>
-        <div style="background: #e2e8f0; height: 150px; display: flex; align-items: center; justify-content: center; color: #475569; font-family: Georgia, serif; font-style: italic; margin-bottom: 8px; border: 1px solid #cbd5e1;">
-          Portrait by Gilbert Stuart (1796)
-        </div>
-        <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
-          <tr><td colspan="2" style="background: #eaecf0; text-align: center; font-weight: 700; padding: 4px;">1st President of the United States</td></tr>
-          <tr><td style="padding: 4px 0; font-weight: 600;">In office</td><td style="padding: 4px 0;">April 30, 1789 – March 4, 1797</td></tr>
-          <tr><td style="padding: 4px 0; font-weight: 600;">Vice President</td><td style="padding: 4px 0;">John Adams</td></tr>
-          <tr><td style="padding: 4px 0; font-weight: 600;">Preceded by</td><td style="padding: 4px 0;"><i>Office established</i></td></tr>
-          <tr><td style="padding: 4px 0; font-weight: 600;">Succeeded by</td><td style="padding: 4px 0;">John Adams</td></tr>
-          <tr><td style="padding: 4px 0; font-weight: 600;">Born</td><td style="padding: 4px 0;">February 22, 1732<br/>Popes Creek, Virginia</td></tr>
-          <tr><td style="padding: 4px 0; font-weight: 600;">Died</td><td style="padding: 4px 0;">December 14, 1799 (aged 67)<br/>Mount Vernon, Virginia</td></tr>
-        </table>
-      </div>
-      <p style="margin-top: 0;">
-        <b>George Washington</b> (February 22, 1732 – December 14, 1799) was an American Founding Father, military officer, and statesman who served as the first president of the United States from 1789 to 1797. Appointed by the Second Continental Congress as commander of the Continental Army in 1775, Washington led Patriot forces to victory in the American Revolutionary War and then served as president of the Constitutional Convention in 1787, which drafted the current Constitution of the United States.
-      </p>
-      <p>
-        Washington's first public office, from 1749 to 1750, was as surveyor of Culpeper County in the Colony of Virginia. In 1752, he received military training and was granted the rank of major in the Virginia Regiment. During the French and Indian War, Washington was promoted to colonel in 1758 and commanded the Virginia Regiment, gaining invaluable command experience across the frontier.
-      </p>
-      <h2 style="font-family: Georgia, serif; font-size: 21px; font-weight: 400; border-bottom: 1px solid #a2a9b1; padding-bottom: 3px; margin-top: 22px;">Presidency (1789–1797)</h2>
-      <p>
-        Washington was unanimously elected president by the Electoral College in both the 1788–1789 and 1792 elections. As the first U.S. president, Washington implemented a strong, well-financed national government while remaining impartial in a fierce rivalry that emerged between cabinet members Thomas Jefferson and Alexander Hamilton. During the French Revolution, he proclaimed a policy of neutrality while also sanctioning the Jay Treaty.
-      </p>
-      <p>
-        He set enduring precedents for the office of the president, including republicanism, a peaceful transfer of power, the use of the title "Mr. President", and the two-term tradition. His 1796 Farewell Address became a preeminent statement on republicanism, warning against partisanship, sectionalism, and entanglement in foreign wars.
-      </p>
-      <div style="margin-top: 32px; padding-top: 12px; border-top: 1px solid #eaecf0; font-size: 11.5px; color: #54595d; display: flex; justify-content: space-between;">
-        <span>This page was last edited on November 10, 2026, at 14:22 (UTC).</span>
-        <span style="color: #3366cc; cursor: pointer;" onclick="window.utopiaRestore && window.utopiaRestore()">[Press Esc or ~ to resume session]</span>
-      </div>
-    </main>
-  </div>
-</div>
-"""
-
-
-# -----------------------------------------------------------------------------
-# 3. SESSION STATE & QUERY PARAM NAVIGATION
-# -----------------------------------------------------------------------------
-def init_session_state() -> None:
-    defaults = {
-        "view_mode": "home",  # "home" or "browser"
-        "current_url": "",
-        "history": [],
-        "history_index": -1,
-        "adblock_enabled": True,
-        "render_mode": "proxy",  # "proxy" or "iframe"
-        "panic_active": False,
-        "reload_nonce": 0,
-    }
-    for key, val in defaults.items():
-        if key not in st.session_state:
-            st.session_state[key] = val
-
-
-def normalize_input(raw_query: str) -> str:
-    """Convert raw user input into a valid URL or a frame-friendly search URL."""
-    query = (raw_query or "").strip()
-    if not query:
-        return ""
-
-    if query.startswith(("http://", "https://")):
-        return query
-
-    # Check if input looks like a domain/URL (e.g., wikipedia.org, khanacademy.org/math)
-    domain_pattern = re.compile(
-        r"^(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(?::\d+)?(?:/[^\s]*)?$"
-    )
-    if " " not in query and domain_pattern.match(query):
-        return f"https://{query}"
-
-    # Route search queries to DuckDuckGo HTML (fast, clean, no JS/X-Frame-Options lockouts)
-    encoded = urllib.parse.quote_plus(query)
-    return f"https://html.duckduckgo.com/html/?q={encoded}"
-
-
-def navigate_to(raw_input: str, push_history: bool = True) -> None:
-    """Navigate the browser viewer to a URL or search query."""
-    target_url = normalize_input(raw_input)
-    if not target_url:
-        return
-
-    st.session_state.view_mode = "browser"
-    st.session_state.current_url = target_url
-    st.session_state.render_mode = "proxy"
-
-    if push_history:
-        history: List[str] = st.session_state.history
-        idx: int = st.session_state.history_index
-        # Truncate forward history if branching
-        if idx < len(history) - 1:
-            history = history[: idx + 1]
-        if not history or history[-1] != target_url:
-            history.append(target_url)
-        st.session_state.history = history
-        st.session_state.history_index = len(history) - 1
-
-
-def go_back() -> None:
-    if st.session_state.history_index > 0:
-        st.session_state.history_index -= 1
-        st.session_state.current_url = st.session_state.history[
-            st.session_state.history_index
-        ]
-        st.session_state.view_mode = "browser"
-
-
-def go_forward() -> None:
-    if st.session_state.history_index < len(st.session_state.history) - 1:
-        st.session_state.history_index += 1
-        st.session_state.current_url = st.session_state.history[
-            st.session_state.history_index
-        ]
-        st.session_state.view_mode = "browser"
-
-
-def go_home() -> None:
-    st.session_state.view_mode = "home"
-
-
-def handle_query_param_navigation() -> None:
-    """Handle link clicks dispatched from inside the proxied web frame."""
-    nav_target = st.query_params.get("nav")
-    if nav_target:
-        st.query_params.clear()
-        navigate_to(nav_target, push_history=True)
-
-
-# -----------------------------------------------------------------------------
-# 4. BUILT-IN AD & TRACKER BLOCKER + ASSET REWRITER
-# -----------------------------------------------------------------------------
-def is_ad_url(url: str) -> bool:
-    if not url:
-        return False
-    lower = url.lower()
-    if any(domain in lower for domain in AD_DOMAINS):
-        return True
-    if any(
-        token in lower
-        for token in (
-            "/pagead/",
-            "/ads/",
-            "/adserver",
-            "/adservice",
-            "doubleclick",
-            "googlesyndication",
-            "analytics.js",
-            "gtm.js",
-            "fbevents.js",
-        )
-    ):
-        return True
-    return False
-
-
-def has_ad_attributes(tag: Tag) -> bool:
-    if not isinstance(tag, Tag) or tag.name in ("html", "body", "head"):
-        return False
-
-    if tag.name == "ins" and "adsbygoogle" in (tag.get("class") or []):
-        return True
-
-    if tag.has_attr("data-ad") or tag.has_attr("data-ad-slot") or tag.has_attr("data-google-query-id"):
-        return True
-
-    aria_label = tag.get("aria-label", "")
-    if isinstance(aria_label, str) and "advertisement" in aria_label.lower():
-        return True
-
-    tag_id = tag.get("id", "")
-    if isinstance(tag_id, str) and tag_id and AD_TOKEN_PATTERN.search(tag_id):
-        return True
-
-    classes = tag.get("class") or []
-    if isinstance(classes, str):
-        classes = classes.split()
-    for cls in classes:
-        if AD_TOKEN_PATTERN.search(cls):
-            return True
-
-    return False
-
-
-def resolve_url(raw_url: str, base_url: str) -> str:
-    """Resolve relative URLs and unwrap DuckDuckGo redirect links."""
-    if not raw_url:
-        return raw_url
-    cleaned = raw_url.strip()
-    if cleaned.startswith(("data:", "javascript:", "mailto:", "tel:", "#")):
-        return cleaned
-
-    absolute = urllib.parse.urljoin(base_url, cleaned)
-
-    # Unwrap DuckDuckGo HTML redirect URLs so search results load directly in-proxy
-    parsed = urllib.parse.urlparse(absolute)
-    if "duckduckgo.com" in parsed.netloc and parsed.path.startswith("/l/"):
-        qs = urllib.parse.parse_qs(parsed.query)
-        if "uddg" in qs and qs["uddg"]:
-            return qs["uddg"][0]
-
-    return absolute
-
-
-def rewrite_srcset(srcset_val: str, base_url: str) -> str:
-    parts = []
-    for candidate in srcset_val.split(","):
-        tokens = candidate.strip().split()
-        if not tokens:
-            continue
-        tokens[0] = resolve_url(tokens[0], base_url)
-        parts.append(" ".join(tokens))
-    return ", ".join(parts)
-
-
-def rewrite_css_urls(css_text: str, base_url: str) -> str:
-    def _repl(match: re.Match) -> str:
-        quote = match.group(1) or ""
-        raw = match.group(2).strip()
-        if raw.startswith(("data:", "#")):
-            return match.group(0)
-        resolved = resolve_url(raw, base_url)
-        return f"url({quote}{resolved}{quote})"
-
-    return re.sub(r"""url\(\s*(['"]?)(.*?)\1\s*\)""", _repl, css_text, flags=re.IGNORECASE)
-
-
-def build_frame_bridge_script(base_url: str, adblock_enabled: bool) -> str:
-    """Inject lightweight JS inside the rendered page for seamless navigation & panic hotkey."""
-    safe_base = html.escape(base_url, quote=True)
-    anti_popup = "window.open = function() { return null; };" if adblock_enabled else ""
-    return f"""
-<script id="utopia-frame-bridge">
-(function() {{
-  {anti_popup}
-  const BASE_URL = "{safe_base}";
-
-  function triggerParentPanic() {{
-    try {{
-      if (window.parent && typeof window.parent.__utopiaTogglePanic === "function") {{
-        window.parent.__utopiaTogglePanic(true);
-      }}
-    }} catch (err) {{}}
-  }}
-
-  // Instant Escape or ~ panic hotkey inside web viewer
-  window.addEventListener("keydown", function(e) {{
-    if (e.key === "Escape" || e.key === "~" || e.key === "`") {{
-      e.preventDefault();
-      e.stopPropagation();
-      triggerParentPanic();
-    }}
-  }}, true);
-
-  function navigateParent(targetUrl) {{
-    if (!targetUrl || targetUrl.startsWith("javascript:") || targetUrl.startsWith("mailto:") || targetUrl.startsWith("tel:")) {{
-      return false;
-    }}
-    if (targetUrl.startsWith("#")) {{
-      const el = document.querySelector(targetUrl);
-      if (el) el.scrollIntoView({{ behavior: "smooth" }});
-      return true;
-    }}
-    try {{
-      const resolved = new URL(targetUrl, BASE_URL).href;
-      const topUrl = new URL(window.top.location.href);
-      topUrl.searchParams.set("nav", resolved);
-      window.top.location.href = topUrl.toString();
-      return true;
-    }} catch (err) {{
-      return false;
-    }}
-  }}
-
-  // Intercept link clicks for ultra-smooth ad-blocked navigation
-  document.addEventListener("click", function(e) {{
-    const anchor = e.target.closest("a[href]");
-    if (!anchor) return;
-    const href = anchor.getAttribute("href");
-    if (!href || href.startsWith("#")) return;
-    if (navigateParent(href)) {{
-      e.preventDefault();
-      e.stopPropagation();
-    }}
-  }}, true);
-
-  // Intercept GET forms (e.g., on-page search bars)
-  document.addEventListener("submit", function(e) {{
-    const form = e.target;
-    if (!form || (form.method && form.method.toLowerCase() !== "get")) return;
-    const action = form.getAttribute("action") || BASE_URL;
-    try {{
-      const actionUrl = new URL(action, BASE_URL);
-      const formData = new FormData(form);
-      for (const [k, v] of formData.entries()) {{
-        actionUrl.searchParams.set(k, v.toString());
-      }}
-      if (navigateParent(actionUrl.href)) {{
-        e.preventDefault();
-        e.stopPropagation();
-      }}
-    }} catch (err) {{}}
-  }}, true);
-}})();
-</script>
-"""
-
-
-@st.cache_data(ttl=180, show_spinner=False)
-def fetch_and_clean_page(
-    url: str, adblock_enabled: bool, reload_nonce: int = 0
-) -> Dict[str, object]:
+# Hide default Streamlit chrome (header, footer, toolbar, padding) and stretch
+# the HTML component iframe to fill 100vw x 100vh seamlessly.
+st.markdown(
     """
-    Fetch target webpage, strip ads/trackers, rewrite relative assets to absolute URLs,
-    or gracefully fall back to direct sandboxed iframe mode when required.
-    """
-    _ = reload_nonce  # Used solely to bust Streamlit cache on manual reload
-
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/128.0.0.0 Safari/537.36"
-        ),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "DNT": "1",
-    }
-
-    try:
-        resp = requests.get(url, headers=headers, timeout=(6, 12), allow_redirects=True)
-    except requests.RequestException as exc:
-        return {
-            "mode": "iframe",
-            "url": url,
-            "blocked_count": 0,
-            "title": url,
-            "notice": f"Switched to Direct Frame mode ({exc.__class__.__name__}).",
-        }
-
-    # If site blocks automated requests (401/403/429/503) or returns non-HTML, use Direct Frame
-    content_type = resp.headers.get("Content-Type", "").lower()
-    if resp.status_code in (401, 403, 429, 503) or (
-        "text/html" not in content_type and "application/xhtml" not in content_type
-    ):
-        return {
-            "mode": "iframe",
-            "url": resp.url or url,
-            "blocked_count": 0,
-            "title": resp.url or url,
-            "notice": f"Switched to Direct Frame mode (HTTP {resp.status_code}).",
-        }
-
-    resp.encoding = resp.apparent_encoding or resp.encoding or "utf-8"
-    final_url = resp.url or url
-    soup = BeautifulSoup(resp.text, "html.parser")
-    blocked_count = 0
-
-    # 1. Strip restrictive frame/CSP meta tags
-    for meta in soup.find_all("meta"):
-        http_equiv = (meta.get("http-equiv") or "").lower()
-        if http_equiv in ("content-security-policy", "x-frame-options"):
-            meta.decompose()
-
-    # 2. Built-in Ad & Tracker Blocker
-    if adblock_enabled:
-        # Remove ad/tracker network scripts, iframes, beacons, and stylesheets
-        for tag in list(
-            soup.find_all(["script", "iframe", "img", "link", "object", "embed", "source"])
-        ):
-            if not isinstance(tag, Tag) or tag.attrs is None:
-                continue
-            src_val = (
-                tag.get("src")
-                or tag.get("href")
-                or tag.get("data")
-                or tag.get("data-src")
-                or ""
-            )
-            if isinstance(src_val, str) and is_ad_url(src_val):
-                tag.decompose()
-                blocked_count += 1
-                continue
-
-            if tag.name == "script" and tag.string:
-                script_body = tag.string.lower()
-                if any(sig in script_body for sig in AD_SCRIPT_SIGNATURES):
-                    tag.decompose()
-                    blocked_count += 1
-                    continue
-
-        # Remove HTML elements matching ad/sponsor/popup class or ID tokens
-        for tag in list(soup.find_all(True)):
-            if not isinstance(tag, Tag) or tag.attrs is None:
-                continue
-            if has_ad_attributes(tag):
-                tag.decompose()
-                blocked_count += 1
-
-    # 3. Rewrite relative URLs across HTML attributes & inline styles
-    url_attrs = ("href", "src", "action", "data-src", "poster")
-    for tag in soup.find_all(True):
-        if not isinstance(tag, Tag) or tag.attrs is None:
-            continue
-
-        for attr in url_attrs:
-            val = tag.get(attr)
-            if isinstance(val, str) and val.strip():
-                tag[attr] = resolve_url(val, final_url)
-
-        if tag.has_attr("srcset") and isinstance(tag["srcset"], str):
-            tag["srcset"] = rewrite_srcset(tag["srcset"], final_url)
-
-        if tag.has_attr("style") and isinstance(tag["style"], str):
-            tag["style"] = rewrite_css_urls(tag["style"], final_url)
-
-    for style_tag in soup.find_all("style"):
-        if style_tag.string:
-            style_tag.string = rewrite_css_urls(style_tag.string, final_url)
-
-    # 4. Inject Cosmetic Ad-Block CSS & Seamless Navigation/Panic Bridge into <head>
-    head = soup.head
-    if head is None:
-        head = soup.new_tag("head")
-        if soup.html:
-            soup.html.insert(0, head)
-        else:
-            soup.insert(0, head)
-
-    if adblock_enabled:
-        head.append(BeautifulSoup(COSMETIC_FILTER_CSS, "html.parser"))
-
-    head.append(
-        BeautifulSoup(
-            build_frame_bridge_script(final_url, adblock_enabled), "html.parser"
-        )
-    )
-
-    page_title = (
-        soup.title.string.strip()
-        if soup.title and soup.title.string
-        else final_url
-    )
-
-    return {
-        "mode": "proxy",
-        "html": str(soup),
-        "blocked_count": blocked_count,
-        "title": page_title,
-        "url": final_url,
-    }
-
-
-# -----------------------------------------------------------------------------
-# 5. CUSTOM DARK-MODE CSS & INSTANT PANIC ENGINE
-# -----------------------------------------------------------------------------
-def inject_global_styles() -> None:
-    st.markdown(
-        """
-        <style>
-        /* Hide all default Streamlit chrome */
-        header[data-testid="stHeader"],
+    <style>
         #MainMenu,
+        header,
         footer,
+        [data-testid="stHeader"],
         [data-testid="stToolbar"],
         [data-testid="stDecoration"],
         [data-testid="stStatusWidget"],
-        .stDeployButton {
+        [data-testid="stSidebar"] {
             display: none !important;
             visibility: hidden !important;
         }
 
-        /* Deep Navy / Slate Base Theme */
-        html, body, .stApp {
+        html,
+        body,
+        .stApp,
+        [data-testid="stAppViewContainer"],
+        [data-testid="stMain"],
+        .main,
+        .block-container,
+        [data-testid="stMainBlockContainer"],
+        [data-testid="stVerticalBlock"],
+        [data-testid="stElementContainer"],
+        .element-container {
+            margin: 0 !important;
+            padding: 0 !important;
+            width: 100vw !important;
+            max-width: 100vw !important;
+            height: 100vh !important;
+            max-height: 100vh !important;
+            overflow: hidden !important;
             background-color: #0f172a !important;
-            color: #f8fafc !important;
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         }
 
-        .block-container {
-            padding-top: 0.45rem !important;
-            padding-bottom: 0.25rem !important;
-            padding-left: 0.9rem !important;
-            padding-right: 0.9rem !important;
-            max-width: 100% !important;
+        iframe,
+        [data-testid="stCustomComponentV1"] iframe {
+            position: fixed !important;
+            top: 0 !important;
+            left: 0 !important;
+            width: 100vw !important;
+            height: 100vh !important;
+            border: none !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            display: block !important;
+            z-index: 999999 !important;
         }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
-        /* Sleek Inputs & Buttons */
-        div[data-testid="stTextInput"] input {
-            background-color: #1e293b !important;
-            color: #f8fafc !important;
-            border: 1px solid rgba(99, 102, 241, 0.45) !important;
-            border-radius: 10px !important;
-            padding: 0.52rem 0.9rem !important;
-            font-size: 0.94rem !important;
-            box-shadow: 0 0 18px rgba(99, 102, 241, 0.16) !important;
-            transition: all 0.2s ease !important;
-        }
+HTML_APP = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Utopia Education</title>
+  <style>
+    :root {
+      --bg-primary: #0f172a;
+      --bg-secondary: #1e293b;
+      --bg-tertiary: #273549;
+      --border-subtle: rgba(148, 163, 184, 0.14);
+      --border-strong: rgba(148, 163, 184, 0.28);
+      --accent: #6366f1;
+      --accent-hover: #4f46e5;
+      --accent-soft: rgba(99, 102, 241, 0.16);
+      --accent-glow: rgba(99, 102, 241, 0.32);
+      --text-primary: #f8fafc;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --radius-lg: 16px;
+      --radius-md: 10px;
+      --radius-sm: 8px;
+      --transition: 160ms cubic-bezier(0.22, 1, 0.36, 1);
+    }
 
-        div[data-testid="stTextInput"] input:focus {
-            border-color: #6366f1 !important;
-            box-shadow: 0 0 24px rgba(99, 102, 241, 0.45) !important;
-            outline: none !important;
-        }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
 
-        div[data-testid="stTextInput"] label {
-            display: none !important;
-        }
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      background-color: var(--bg-primary);
+      color: var(--text-primary);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, Helvetica, Arial, sans-serif;
+      overflow: hidden;
+      -webkit-font-smoothing: antialiased;
+    }
 
-        /* Primary & Secondary Streamlit Buttons */
-        .stButton > button,
-        div[data-testid="stFormSubmitButton"] > button {
-            background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%) !important;
-            color: #f8fafc !important;
-            border: 1px solid rgba(99, 102, 241, 0.35) !important;
-            border-radius: 10px !important;
-            font-weight: 600 !important;
-            font-size: 0.86rem !important;
-            padding: 0.42rem 0.75rem !important;
-            transition: all 0.18s ease !important;
-            white-space: nowrap !important;
-        }
+    /* Subtle ambient background glow */
+    .ambient-bg {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background:
+        radial-gradient(circle at 20% 15%, rgba(99, 102, 241, 0.14) 0%, transparent 45%),
+        radial-gradient(circle at 82% 85%, rgba(56, 189, 248, 0.08) 0%, transparent 45%);
+      z-index: 0;
+    }
 
-        .stButton > button:hover,
-        div[data-testid="stFormSubmitButton"] > button:hover {
-            border-color: #6366f1 !important;
-            background: rgba(99, 102, 241, 0.22) !important;
-            box-shadow: 0 0 16px rgba(99, 102, 241, 0.35) !important;
-            transform: translateY(-1px);
-        }
+    /* View Containers */
+    .view {
+      position: relative;
+      z-index: 1;
+      width: 100%;
+      height: 100%;
+      display: none;
+      flex-direction: column;
+    }
 
-        .stButton > button:disabled {
-            opacity: 0.38 !important;
-            cursor: not-allowed !important;
-            transform: none !important;
-        }
+    .view.active {
+      display: flex;
+    }
 
-        /* Hero Section Styling */
-        .utopia-hero {
-            text-align: center;
-            padding: 2.2rem 1rem 1.3rem 1rem;
-            max-width: 820px;
-            margin: 0 auto;
-        }
+    /* Shared Buttons */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      border: 1px solid var(--border-subtle);
+      background: var(--bg-secondary);
+      color: var(--text-primary);
+      font-size: 13px;
+      font-weight: 500;
+      padding: 7px 12px;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      transition: background var(--transition), border-color var(--transition), transform var(--transition), box-shadow var(--transition);
+      text-decoration: none;
+      white-space: nowrap;
+      user-select: none;
+    }
 
-        .utopia-badge {
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            background: rgba(99, 102, 241, 0.14);
-            border: 1px solid rgba(99, 102, 241, 0.4);
-            color: #a5b4fc;
-            padding: 5px 14px;
-            border-radius: 999px;
-            font-size: 0.8rem;
-            font-weight: 600;
-            letter-spacing: 0.03em;
-            margin-bottom: 1rem;
-        }
+    .btn:hover:not(:disabled) {
+      background: var(--bg-tertiary);
+      border-color: var(--border-strong);
+    }
 
-        .utopia-title {
-            font-size: clamp(2.3rem, 4.5vw, 3.4rem);
-            font-weight: 800;
-            letter-spacing: -0.03em;
-            margin: 0 0 0.55rem 0;
-            background: linear-gradient(135deg, #ffffff 15%, #a5b4fc 65%, #6366f1 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            text-shadow: 0 0 40px rgba(99, 102, 241, 0.25);
-        }
+    .btn:active:not(:disabled) {
+      transform: translateY(1px);
+    }
 
-        .utopia-subtitle {
-            color: #94a3b8;
-            font-size: 1.05rem;
-            font-weight: 400;
-            margin: 0 auto 1.4rem auto;
-            max-width: 660px;
-            line-height: 1.5;
-        }
+    .btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
 
-        /* Subject Quick-Launch Cards */
-        .subject-card {
-            background: linear-gradient(160deg, rgba(30, 41, 59, 0.88) 0%, rgba(15, 23, 42, 0.96) 100%);
-            border: 1px solid rgba(99, 102, 241, 0.24);
-            border-radius: 14px;
-            padding: 1.15rem 1.2rem 0.9rem 1.2rem;
-            margin-bottom: 0.45rem;
-            transition: all 0.22s ease;
-            box-shadow: 0 8px 24px rgba(2, 6, 23, 0.45);
-        }
+    .btn-accent {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #ffffff;
+    }
 
-        .subject-card:hover {
-            border-color: #6366f1;
-            box-shadow: 0 0 26px rgba(99, 102, 241, 0.28);
-            transform: translateY(-2px);
-        }
+    .btn-accent:hover:not(:disabled) {
+      background: var(--accent-hover);
+      border-color: var(--accent-hover);
+      box-shadow: 0 4px 16px var(--accent-glow);
+    }
 
-        .subject-card-header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            margin-bottom: 0.45rem;
-        }
+    .btn-icon {
+      padding: 7px;
+      width: 32px;
+      height: 32px;
+    }
 
-        .subject-card-title {
-            font-size: 1.06rem;
-            font-weight: 700;
-            color: #f8fafc;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
+    .kbd-hint {
+      font-size: 11px;
+      padding: 2px 6px;
+      border-radius: 5px;
+      background: rgba(15, 23, 42, 0.65);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-secondary);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
 
-        .subject-card-tag {
-            font-size: 0.72rem;
-            color: #818cf8;
-            background: rgba(99, 102, 241, 0.14);
-            border: 1px solid rgba(99, 102, 241, 0.28);
-            padding: 2px 8px;
-            border-radius: 6px;
-        }
+    /* ================= HOME DASHBOARD ================= */
+    #view-home {
+      overflow-y: auto;
+      padding: 20px 28px 32px;
+    }
 
-        .subject-card-desc {
-            font-size: 0.86rem;
-            color: #94a3b8;
-            line-height: 1.45;
-            min-height: 2.5rem;
-        }
+    .home-topbar {
+      width: 100%;
+      max-width: 1140px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
 
-        /* Status Pills in Top Browser Bar */
-        .status-pill-on {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            gap: 5px;
-            background: rgba(16, 185, 129, 0.14);
-            border: 1px solid rgba(16, 185, 129, 0.45);
-            color: #34d399;
-            border-radius: 8px;
-            padding: 0.36rem 0.6rem;
-            font-size: 0.8rem;
-            font-weight: 600;
-            width: 100%;
-            text-align: center;
-        }
+    .brand-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 600;
+      font-size: 15px;
+      color: var(--text-primary);
+    }
 
-        .status-pill-off {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            gap: 5px;
-            background: rgba(244, 63, 94, 0.14);
-            border: 1px solid rgba(244, 63, 94, 0.4);
-            color: #fb7185;
-            border-radius: 8px;
-            padding: 0.36rem 0.6rem;
-            font-size: 0.8rem;
-            font-weight: 600;
-            width: 100%;
-            text-align: center;
-        }
+    .brand-logo {
+      width: 32px;
+      height: 32px;
+      border-radius: 9px;
+      background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+      display: grid;
+      place-items: center;
+      box-shadow: 0 4px 14px var(--accent-glow);
+    }
 
-        /* Full-bleed Web Viewer Frame Border */
-        iframe[title="st.iframe"] {
-            border: 1px solid rgba(99, 102, 241, 0.32) !important;
-            border-radius: 12px !important;
-            background-color: #ffffff !important;
-            box-shadow: 0 12px 36px rgba(2, 6, 23, 0.65) !important;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--text-secondary);
+      background: rgba(30, 41, 59, 0.7);
+      border: 1px solid var(--border-subtle);
+      padding: 5px 11px;
+      border-radius: 999px;
+    }
 
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--success);
+      box-shadow: 0 0 8px rgba(16, 185, 129, 0.7);
+    }
 
-def inject_panic_hotkey_engine() -> None:
-    """
-    Inject a zero-latency DOM decoy screen into window.parent.document so pressing
-    Escape or ~ (either on the main app OR inside the web viewer iframe) switches
-    the display to a realistic Wikipedia article in <5ms and updates the tab title.
-    """
-    escaped_decoy = (
-        DECOY_WIKIPEDIA_HTML.replace("\\", "\\\\")
-        .replace("`", "\\`")
-        .replace("${", "\\${")
-    )
+    .home-main {
+      width: 100%;
+      max-width: 1140px;
+      margin: auto;
+      padding-top: 18px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
 
-    components.html(
-        f"""
-        <script>
-        (function() {{
-          try {{
-            const parentWin = window.parent;
-            const parentDoc = parentWin.document;
-            const ORIGINAL_TITLE = "Utopia Education";
-            const DECOY_TITLE = "George Washington - Wikipedia";
+    .hero-title {
+      font-size: clamp(28px, 4vw, 40px);
+      font-weight: 700;
+      letter-spacing: -0.025em;
+      text-align: center;
+      margin-bottom: 8px;
+      background: linear-gradient(180deg, #ffffff 0%, #cbd5e1 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
 
-            let overlay = parentDoc.getElementById("utopia-instant-panic-overlay");
-            if (!overlay) {{
-              overlay = parentDoc.createElement("div");
-              overlay.id = "utopia-instant-panic-overlay";
-              overlay.style.cssText = "position:fixed;inset:0;z-index:2147483647;display:none;overflow-y:auto;background:#ffffff;";
-              overlay.innerHTML = `{escaped_decoy}`;
-              parentDoc.body.appendChild(overlay);
-            }}
+    .hero-subtitle {
+      font-size: 15px;
+      color: var(--text-secondary);
+      text-align: center;
+      max-width: 580px;
+      line-height: 1.5;
+      margin-bottom: 24px;
+    }
 
-            parentWin.__utopiaPanicState = parentWin.__utopiaPanicState || false;
+    /* Centered Search / URL Bar */
+    .search-wrapper {
+      width: 100%;
+      max-width: 680px;
+      margin-bottom: 14px;
+    }
 
-            parentWin.__utopiaTogglePanic = function(forceState) {{
-              const nextState = typeof forceState === "boolean" ? forceState : !parentWin.__utopiaPanicState;
-              parentWin.__utopiaPanicState = nextState;
-              if (nextState) {{
-                overlay.style.display = "block";
-                parentDoc.title = DECOY_TITLE;
-              }} else {{
-                overlay.style.display = "none";
-                parentDoc.title = ORIGINAL_TITLE;
-              }}
-            }};
+    .search-box {
+      display: flex;
+      align-items: center;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-strong);
+      border-radius: 14px;
+      padding: 6px 8px 6px 16px;
+      gap: 10px;
+      box-shadow: 0 12px 32px rgba(2, 6, 23, 0.45);
+      transition: border-color var(--transition), box-shadow var(--transition);
+    }
 
-            parentWin.utopiaRestore = function() {{
-              parentWin.__utopiaTogglePanic(false);
-            }};
+    .search-box:focus-within {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-soft), 0 14px 36px rgba(2, 6, 23, 0.55);
+    }
 
-            if (!parentWin.__utopiaKeyListenerAttached) {{
-              parentWin.__utopiaKeyListenerAttached = true;
-              parentDoc.addEventListener("keydown", function(e) {{
-                if (e.key === "Escape" || e.key === "~" || e.key === "`") {{
-                  e.preventDefault();
-                  e.stopPropagation();
-                  parentWin.__utopiaTogglePanic();
-                }}
-              }}, true);
-            }}
-          }} catch (err) {{
-            console.warn("Panic overlay initialization notice:", err);
-          }}
-        }})();
-        </script>
-        """,
-        height=0,
-        width=0,
-    )
+    .search-box input {
+      flex: 1;
+      background: transparent;
+      border: none;
+      outline: none;
+      color: var(--text-primary);
+      font-size: 15px;
+      min-width: 0;
+    }
 
+    .search-box input::placeholder {
+      color: var(--text-muted);
+    }
 
-# -----------------------------------------------------------------------------
-# 6. UI RENDERERS (DECOY SCREEN, BROWSER BAR, HOME PORTAL, WEB VIEWER)
-# -----------------------------------------------------------------------------
-def render_panic_decoy_view() -> None:
-    """Render full-screen decoy article if triggered via the Streamlit Hide button."""
-    components.html(
-        """
-        <script>
-        try { window.parent.document.title = "George Washington - Wikipedia"; } catch(e) {}
-        </script>
-        """,
-        height=0,
-    )
-    st.markdown(DECOY_WIKIPEDIA_HTML, unsafe_allow_html=True)
-    _, right_col = st.columns([9, 1])
-    with right_col:
-        if st.button("Restore", key="restore_from_panic", help="Return to Utopia Education"):
-            st.session_state.panic_active = False
-            st.rerun()
+    .quick-chips {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 8px;
+      margin-bottom: 30px;
+    }
 
+    .chip {
+      font-size: 12px;
+      color: var(--text-secondary);
+      background: rgba(30, 41, 59, 0.75);
+      border: 1px solid var(--border-subtle);
+      padding: 5px 12px;
+      border-radius: 999px;
+      cursor: pointer;
+      transition: all var(--transition);
+    }
 
-def render_top_browser_bar(blocked_count: int, active_mode: str) -> None:
-    """Render the sleek, slim top browser bar above the web viewport."""
-    can_back = st.session_state.history_index > 0
-    can_forward = st.session_state.history_index < len(st.session_state.history) - 1
+    .chip:hover {
+      color: var(--text-primary);
+      border-color: var(--accent);
+      background: var(--accent-soft);
+    }
 
-    c_back, c_fwd, c_rel, c_home, c_url, c_shield, c_toggle, c_mode, c_hide = st.columns(
-        [0.45, 0.45, 0.45, 0.55, 5.2, 1.15, 0.75, 0.85, 0.75],
-        vertical_alignment="center",
-    )
+    /* Subject Quick-Launch Cards Grid */
+    .section-label {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-muted);
+      margin-bottom: 12px;
+    }
 
-    with c_back:
-        if st.button("←", key="nav_back", disabled=not can_back, help="Back", use_container_width=True):
-            go_back()
-            st.rerun()
+    .cards-grid {
+      width: 100%;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+    }
 
-    with c_fwd:
-        if st.button("→", key="nav_fwd", disabled=not can_forward, help="Forward", use_container_width=True):
-            go_forward()
-            st.rerun()
+    @media (max-width: 900px) {
+      .cards-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
 
-    with c_rel:
-        if st.button("↻", key="nav_reload", help="Reload Page", use_container_width=True):
-            st.session_state.reload_nonce += 1
-            st.rerun()
+    @media (max-width: 600px) {
+      .cards-grid {
+        grid-template-columns: 1fr;
+      }
+    }
 
-    with c_home:
-        if st.button("⌂", key="nav_home", help="Utopia Home", use_container_width=True):
-            go_home()
-            st.rerun()
+    .subject-card {
+      background: rgba(30, 41, 59, 0.82);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 14px;
+      cursor: pointer;
+      transition: transform var(--transition), border-color var(--transition), background var(--transition), box-shadow var(--transition);
+    }
 
-    with c_url:
-        with st.form("browser_address_form", clear_on_submit=False, border=False):
-            url_input = st.text_input(
-                "Address Bar",
-                value=st.session_state.current_url,
-                placeholder="Enter URL or search topic (e.g., khanacademy.org or cellular respiration)...",
-                label_visibility="collapsed",
-            )
-            submitted = st.form_submit_button("Go", use_container_width=False)
-            # Hide submit button visually so Enter key submits cleanly
-            st.markdown(
-                """
-                <style>
-                div[data-testid="stForm"] div[data-testid="stFormSubmitButton"] {
-                    display: none !important;
-                }
-                </style>
-                """,
-                unsafe_allow_html=True,
-            )
-            if submitted and url_input.strip():
-                navigate_to(url_input, push_history=True)
-                st.rerun()
+    .subject-card:hover {
+      transform: translateY(-2px);
+      background: var(--bg-secondary);
+      border-color: rgba(99, 102, 241, 0.55);
+      box-shadow: 0 12px 28px rgba(2, 6, 23, 0.45);
+    }
 
-    with c_shield:
-        if st.session_state.adblock_enabled:
-            st.markdown(
-                f'<div class="status-pill-on" title="Ads & Trackers Blocked on this page">🛡️ {blocked_count} Blocked</div>',
-                unsafe_allow_html=True,
-            )
-        else:
-            st.markdown(
-                '<div class="status-pill-off" title="Ad Blocker Disabled">🛡️ Off</div>',
-                unsafe_allow_html=True,
-            )
+    .card-top {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+    }
 
-    with c_toggle:
-        toggle_label = "Shield: ON" if st.session_state.adblock_enabled else "Shield: OFF"
-        if st.button(toggle_label, key="toggle_adblock", help="Toggle Built-in Ad & Tracker Blocker", use_container_width=True):
-            st.session_state.adblock_enabled = not st.session_state.adblock_enabled
-            st.rerun()
+    .card-icon {
+      width: 40px;
+      height: 40px;
+      border-radius: 11px;
+      background: var(--accent-soft);
+      border: 1px solid rgba(99, 102, 241, 0.28);
+      color: #818cf8;
+      display: grid;
+      place-items: center;
+      flex-shrink: 0;
+    }
 
-    with c_mode:
-        mode_label = "Clean View" if active_mode == "proxy" else "Frame View"
-        if st.button(mode_label, key="toggle_render_mode", help="Switch between Ad-Cleaned Proxy & Direct Frame", use_container_width=True):
-            st.session_state.render_mode = (
-                "iframe" if st.session_state.render_mode == "proxy" else "proxy"
-            )
-            st.rerun()
+    .card-title {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 4px;
+    }
 
-    with c_hide:
-        if st.button("👁️ Hide", key="panic_hide_browser", help="Instant Panic Hide (or press Esc / ~)", use_container_width=True):
-            st.session_state.panic_active = True
-            st.rerun()
+    .card-desc {
+      font-size: 13px;
+      color: var(--text-secondary);
+      line-height: 1.45;
+    }
 
+    .card-links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      padding-top: 4px;
+      border-top: 1px solid var(--border-subtle);
+    }
 
-def render_home_screen() -> None:
-    """Render the Utopia Education Hero Home Screen and 3-column Subject Quick-Launch Cards."""
-    # Top utility bar with Shield status and Panic Hide button
-    top_left, top_mid, top_right = st.columns([6.5, 1.5, 1.0], vertical_alignment="center")
-    with top_left:
-        st.markdown(
-            '<div style="font-weight:700;font-size:1.05rem;color:#e2e8f0;padding-left:4px;">📚 Utopia Education</div>',
-            unsafe_allow_html=True,
-        )
-    with top_mid:
-        shield_text = "🛡️ Ad & Tracker Blocker: Active" if st.session_state.adblock_enabled else "🛡️ Ad Blocker: Off"
-        pill_cls = "status-pill-on" if st.session_state.adblock_enabled else "status-pill-off"
-        st.markdown(f'<div class="{pill_cls}">{shield_text}</div>', unsafe_allow_html=True)
-    with top_right:
-        if st.button("👁️ Hide [Esc]", key="panic_hide_home", use_container_width=True):
-            st.session_state.panic_active = True
-            st.rerun()
+    .resource-pill {
+      font-size: 11.5px;
+      font-weight: 500;
+      color: #c7d2fe;
+      background: rgba(99, 102, 241, 0.14);
+      border: 1px solid rgba(99, 102, 241, 0.24);
+      padding: 4px 9px;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background var(--transition), border-color var(--transition);
+    }
 
-    # Hero Section
-    st.markdown(
-        """
-        <div class="utopia-hero">
-            <div class="utopia-badge">✨ Ad-Free Academic Browser &bull; Instant Esc / ~ Quick-Hide</div>
-            <h1 class="utopia-title">Utopia Education</h1>
-            <p class="utopia-subtitle">
-                Schoolwork: ELA, Science, History, Math, Literature, Social Studies, and Writing
-            </p>
+    .resource-pill:hover {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #ffffff;
+    }
+
+    /* ================= EMBEDDED WEB VIEWER ================= */
+    .viewer-navbar {
+      height: 50px;
+      min-height: 50px;
+      background: var(--bg-primary);
+      border-bottom: 1px solid var(--border-subtle);
+      padding: 0 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      position: relative;
+      z-index: 10;
+    }
+
+    .url-bar-form {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      padding: 0 10px;
+      height: 34px;
+      gap: 8px;
+      min-width: 0;
+      transition: border-color var(--transition);
+    }
+
+    .url-bar-form:focus-within {
+      border-color: var(--accent);
+    }
+
+    .url-bar-form input {
+      flex: 1;
+      background: transparent;
+      border: none;
+      outline: none;
+      color: var(--text-primary);
+      font-size: 13px;
+      min-width: 0;
+    }
+
+    .shield-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 11px;
+      color: #34d399;
+      background: rgba(16, 185, 129, 0.12);
+      border: 1px solid rgba(16, 185, 129, 0.25);
+      padding: 3px 8px;
+      border-radius: 999px;
+      white-space: nowrap;
+    }
+
+    @media (max-width: 860px) {
+      .shield-pill,
+      .hide-mobile {
+        display: none;
+      }
+    }
+
+    /* Thin loading bar under navbar */
+    .load-bar {
+      position: absolute;
+      left: 0;
+      bottom: -1px;
+      height: 2px;
+      width: 0%;
+      background: linear-gradient(90deg, #6366f1, #38bdf8);
+      transition: width 260ms ease, opacity 200ms ease;
+      opacity: 0;
+    }
+
+    .load-bar.loading {
+      opacity: 1;
+      width: 85%;
+    }
+
+    .load-bar.done {
+      opacity: 0;
+      width: 100%;
+    }
+
+    /* X-Frame-Options Fallback Notice Banner */
+    .fallback-banner {
+      background: rgba(30, 41, 59, 0.96);
+      border-bottom: 1px solid rgba(245, 158, 11, 0.35);
+      padding: 9px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      font-size: 13px;
+      color: var(--text-primary);
+    }
+
+    .fallback-banner.compact {
+      background: rgba(15, 23, 42, 0.94);
+      border-bottom: 1px solid var(--border-subtle);
+      padding: 6px 16px;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .fallback-text {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      line-height: 1.4;
+    }
+
+    .fallback-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
+    .iframe-stage {
+      flex: 1;
+      width: 100%;
+      height: 100%;
+      position: relative;
+      background: #ffffff;
+    }
+
+    #web-frame {
+      width: 100%;
+      height: 100%;
+      border: none;
+      display: block;
+      background: #ffffff;
+    }
+
+    /* ================= FOCUS MODE (STUDY NOTES + WIKIPEDIA SUMMARY) ================= */
+    #view-focus {
+      background: var(--bg-primary);
+    }
+
+    .focus-header {
+      height: 52px;
+      min-height: 52px;
+      padding: 0 20px;
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      background: rgba(15, 23, 42, 0.95);
+    }
+
+    .focus-title-group {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .focus-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #c7d2fe;
+      background: var(--accent-soft);
+      border: 1px solid rgba(99, 102, 241, 0.35);
+      padding: 4px 10px;
+      border-radius: 999px;
+    }
+
+    .focus-workspace {
+      flex: 1;
+      width: 100%;
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 20px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+      overflow: hidden;
+    }
+
+    @media (max-width: 840px) {
+      .focus-workspace {
+        grid-template-columns: 1fr;
+        overflow-y: auto;
+      }
+    }
+
+    .focus-panel {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      min-height: 300px;
+    }
+
+    .panel-header {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .panel-header h2 {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-primary);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .wiki-search-bar {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      gap: 8px;
+    }
+
+    .wiki-search-bar input {
+      flex: 1;
+      background: var(--bg-primary);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      padding: 8px 12px;
+      color: var(--text-primary);
+      font-size: 13px;
+      outline: none;
+    }
+
+    .wiki-search-bar input:focus {
+      border-color: var(--accent);
+    }
+
+    .wiki-content {
+      flex: 1;
+      padding: 18px;
+      overflow-y: auto;
+      line-height: 1.65;
+      font-size: 14px;
+      color: #e2e8f0;
+    }
+
+    .wiki-article-title {
+      font-size: 20px;
+      font-weight: 700;
+      color: #ffffff;
+      margin-bottom: 4px;
+    }
+
+    .wiki-article-desc {
+      font-size: 12.5px;
+      color: #818cf8;
+      margin-bottom: 14px;
+      font-weight: 500;
+    }
+
+    .wiki-article-body {
+      color: #cbd5e1;
+      margin-bottom: 16px;
+    }
+
+    .notes-textarea {
+      flex: 1;
+      width: 100%;
+      background: transparent;
+      border: none;
+      outline: none;
+      resize: none;
+      padding: 16px;
+      color: var(--text-primary);
+      font-family: inherit;
+      font-size: 14px;
+      line-height: 1.7;
+    }
+
+    .notes-textarea::placeholder {
+      color: var(--text-muted);
+    }
+
+    .panel-footer {
+      padding: 10px 16px;
+      border-top: 1px solid var(--border-subtle);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 12px;
+      color: var(--text-muted);
+      background: rgba(15, 23, 42, 0.35);
+    }
+  </style>
+</head>
+<body>
+  <div class="ambient-bg"></div>
+
+  <!-- ==================== 1. HOME DASHBOARD ==================== -->
+  <section id="view-home" class="view active">
+    <header class="home-topbar">
+      <div class="brand-pill">
+        <div class="brand-logo" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M22 10v6M2 10l10-5 10 5-10 5z"/>
+            <path d="M6 12v5c3 3 9 3 12 0v-5"/>
+          </svg>
         </div>
-        """,
-        unsafe_allow_html=True,
-    )
+        <span>Utopia Education</span>
+      </div>
 
-    # Centered Glowing Search / URL Bar
-    _, search_col, _ = st.columns([1.4, 4.2, 1.4])
-    with search_col:
-        with st.form("hero_search_form", clear_on_submit=False, border=False):
-            in_col, btn_col = st.columns([5.2, 1.1], vertical_alignment="center")
-            with in_col:
-                hero_query = st.text_input(
-                    "Search or Enter URL",
-                    placeholder="Search any school topic or enter a website URL (e.g., khanacademy.org)...",
-                    label_visibility="collapsed",
-                )
-            with btn_col:
-                hero_submit = st.form_submit_button("Launch →", use_container_width=True)
+      <div style="display:flex; align-items:center; gap:10px;">
+        <div class="status-badge">
+          <span class="status-dot"></span>
+          <span>Popup Blocker Active</span>
+        </div>
+        <button class="btn" onclick="toggleFocusMode()" title="Switch to Focus Mode (Esc)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>
+          </svg>
+          <span>Focus Mode</span>
+          <span class="kbd-hint">Esc</span>
+        </button>
+      </div>
+    </header>
 
-            if hero_submit and hero_query.strip():
-                navigate_to(hero_query, push_history=True)
-                st.rerun()
+    <main class="home-main">
+      <h1 class="hero-title">Utopia Education</h1>
+      <p class="hero-subtitle">
+        Your all-in-one distraction-free educational resource hub, sandboxed web viewer, and instant study notes workspace.
+      </p>
 
-    st.markdown("<div style='height: 1.4rem;'></div>", unsafe_allow_html=True)
+      <form class="search-wrapper" onsubmit="handleHomeSearch(event)">
+        <div class="search-box">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
+          </svg>
+          <input
+            id="home-search-input"
+            type="text"
+            placeholder="Enter an educational URL (e.g., desmos.com/calculator) or search any topic..."
+            autocomplete="off"
+          />
+          <button type="submit" class="btn btn-accent" style="padding: 9px 18px; border-radius: 10px;">
+            Open
+          </button>
+        </div>
+      </form>
 
-    # 3-Column Grid of Subject Quick-Launch Cards
-    _, grid_container, _ = st.columns([0.6, 8.8, 0.6])
-    with grid_container:
-        for row_start in range(0, len(SUBJECT_CARDS), 3):
-            cols = st.columns(3, gap="medium")
-            for col_idx, card in enumerate(SUBJECT_CARDS[row_start : row_start + 3]):
-                with cols[col_idx]:
-                    st.markdown(
-                        f"""
-                        <div class="subject-card">
-                            <div class="subject-card-header">
-                                <div class="subject-card-title">
-                                    <span>{card['icon']}</span>
-                                    <span>{card['title']}</span>
-                                </div>
-                                <span class="subject-card-tag">{card['tag']}</span>
-                            </div>
-                            <div class="subject-card-desc">{card['desc']}</div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
-                    if st.button(
-                        f"Open {card['title']} →",
-                        key=f"launch_card_{row_start + col_idx}",
-                        use_container_width=True,
-                    ):
-                        navigate_to(card["url"], push_history=True)
-                        st.rerun()
+      <div class="quick-chips">
+        <button class="chip" onclick="openResource('https://en.wikipedia.org/wiki/Main_Page')">Wikipedia</button>
+        <button class="chip" onclick="openResource('https://www.desmos.com/calculator')">Desmos Graphing</button>
+        <button class="chip" onclick="openResource('https://phet.colorado.edu/en/simulations/filter')">PhET Simulations</button>
+        <button class="chip" onclick="openResource('https://www.khanacademy.org')">Khan Academy</button>
+        <button class="chip" onclick="openResource('https://www.gutenberg.org')">Project Gutenberg</button>
+        <button class="chip" onclick="openResource('https://mathworld.wolfram.com')">Wolfram MathWorld</button>
+      </div>
 
+      <div class="section-label">
+        <span>Subject Quick-Launch</span>
+        <span>Click any card or resource pill to launch</span>
+      </div>
 
-def render_web_viewer() -> None:
-    """Render the built-in ultra-smooth interactive web viewer with Ad Blocker."""
-    target_url = st.session_state.current_url
+      <div class="cards-grid">
+        <!-- Math -->
+        <div class="subject-card" onclick="openResource('https://www.desmos.com/calculator')">
+          <div class="card-top">
+            <div>
+              <div class="card-title">Math</div>
+              <div class="card-desc">Interactive graphing calculators, algebra, calculus, and step-by-step problem solving.</div>
+            </div>
+            <div class="card-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18"/><line x1="8" y1="6" x2="8" y2="10"/><line x1="6" y1="8" x2="10" y2="8"/><line x1="14" y1="16" x2="18" y2="16"/>
+              </svg>
+            </div>
+          </div>
+          <div class="card-links">
+            <span class="resource-pill" onclick="event.stopPropagation(); openResource('https://www.desmos.com/calculator')">Desmos</span>
+            <span class="resource-pill" onclick="event.stopPropagation(); openResource('https://en.wikipedia.org/wiki/Portal:Mathematics')">Wikipedia Math</span>
+            <span class="resource-pill" onclick="event.stopPropagation(); openResource('https://www.khanacademy.org/math')">Khan Academy</span>
+          </div>
+        </div>
 
-    if st.session_state.render_mode == "iframe":
-        page_data = {
-            "mode": "iframe",
-            "url": target_url,
-            "blocked_count": 0,
-            "title": target_url,
+        <!-- Science -->
+        <div class="subject-card" onclick="openResource('https://phet.colorado.edu/en/simulations/filter')">
+          <div class="card-top">
+            <div>
+              <div class="card-title">Science</div>
+              <div class="card-desc">Physics, chemistry, and biology simulations alongside peer-reviewed reference guides.</div>
+            </div>
+            <div class="card-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M9 3h6"/><path d="M10 9h4"/><path d="M10 3v6l-4 11a1 1 0 0 0 .9 1.4h10.2a1 1 0 0 0 .9-1.4L14 9V3"/>
+              </svg>
+            </div>
+          </div>
+          <div class="card-links">
+            <span class="resource-pill" onclick="event.stopPropagation(); openResource('https://phet.colorado.edu/en/simulations/filter')">PhET Labs</span>
+            <span class="resource-pill" onclick="event.stopPropagation(); openResource('https://en.wikipedia.org/wiki/Portal:Science')">Wikipedia Science</span>
+            <span class="resource-pill" onclick="event.stopPropagation(); openResource('https://www.khanacademy.org/science')">Khan Academy</span>
+          </div>
+        </div>
+
+        <!-- History -->
+        <div class="subject-card" onclick="openResource('https://en.wikipedia.org/wiki/Portal:History')">
+          <div class="card-top">
+            <div>
+              <div class="card-title">History</div>
+              <div class="card-desc">World civilizations, primary historical archives, timelines, and modern era studies.</div>
+            </div>
+            <div class="card-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+              </svg>
+            </div>
+          </div>
+          <div class="card-links">
+            <span class="resource-pill" onclick="event.stopPropagation(); openResource('https://en.wikipedia.org/wiki/Portal:History')">Wikipedia History</span>
+            <span class="resource-pill" onclick="event.stopPropagation(); openResource('https://www.khanacademy.org/humanities/world-history')">Khan History</span>
+            <span class="resource-pill" onclick="event.stopPropagation(); openResource('https://www.loc.gov')">Library of Congress</span>
+          </div>
+        </div>
+
+        <!-- Literature -->
+        <div class="subject-card" onclick="openResource('https://www.gutenberg.org')">
+          <div class="card-top">
+            <div>
+              <div class="card-title">Literature</div>
+              <div class="card-desc">Classic novels, poetry anthologies, literary analysis, and open-access eBooks.</div>
+            </div>
+            <div class="card-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>
+              </svg>
+            </div>
+          </div>
+          <div class="card-links">
+            <span class="resource-pill" onclick="event.stopPropagation(); openResource('https://www.gutenberg.org')">Project Gutenberg</span>
+            <span class="resource-pill" onclick="event.stopPropagation(); openResource('https://en.wikipedia.org/wiki/Portal:Literature')">Wikipedia Literature</span>
+            <span class="resource-pill" onclick="event.stopPropagation(); openResource('https://standardebooks.org')">Standard Ebooks</span>
+          </div>
+        </div>
+
+        <!-- Social Studies -->
+        <div class="subject-card" onclick="openResource('https://en.wikipedia.org/wiki/Portal:Society')">
+          <div class="card-top">
+            <div>
+              <div class="card-title">Social Studies</div>
+              <div class="card-desc">Civics, economics, human geography, sociology, and global cultural perspectives.</div>
+            </div>
+            <div class="card-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+              </svg>
+            </div>
+          </div>
+          <div class="card-links">
+            <span class="resource-pill" onclick="event.stopPropagation(); openResource('https://en.wikipedia.org/wiki/Portal:Society')">Society Portal</span>
+            <span class="resource-pill" onclick="event.stopPropagation(); openResource('https://www.khanacademy.org/economics-finance-domain')">Khan Economics</span>
+            <span class="resource-pill" onclick="event.stopPropagation(); openResource('https://en.wikipedia.org/wiki/Geography')">Geography</span>
+          </div>
+        </div>
+
+        <!-- Writing -->
+        <div class="subject-card" onclick="openResource('https://en.wikipedia.org/wiki/Academic_writing')">
+          <div class="card-top">
+            <div>
+              <div class="card-title">Writing</div>
+              <div class="card-desc">Essay structure, rhetoric, grammar guides, citations, and vocabulary dictionaries.</div>
+            </div>
+            <div class="card-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>
+              </svg>
+            </div>
+          </div>
+          <div class="card-links">
+            <span class="resource-pill" onclick="event.stopPropagation(); openResource('https://en.wikipedia.org/wiki/Academic_writing')">Academic Writing</span>
+            <span class="resource-pill" onclick="event.stopPropagation(); openResource('https://en.wiktionary.org/wiki/Wiktionary:Main_Page')">Wiktionary</span>
+            <span class="resource-pill" onclick="event.stopPropagation(); openResource('https://owl.purdue.edu/owl/')">Purdue OWL</span>
+          </div>
+        </div>
+      </div>
+    </main>
+  </section>
+
+  <!-- ==================== 2. EMBEDDED WEB VIEWER ==================== -->
+  <section id="view-viewer" class="view">
+    <nav class="viewer-navbar">
+      <button class="btn btn-icon" onclick="showHome()" title="Home Dashboard">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>
+        </svg>
+      </button>
+
+      <button id="btn-back" class="btn btn-icon" onclick="goBack()" title="Back" disabled>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="m15 18-6-6 6-6"/>
+        </svg>
+      </button>
+
+      <button class="btn btn-icon" onclick="reloadFrame()" title="Reload Page">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/>
+        </svg>
+      </button>
+
+      <form class="url-bar-form" onsubmit="handleNavbarSubmit(event)">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+        </svg>
+        <input
+          id="viewer-url-input"
+          type="text"
+          placeholder="Enter URL or search topic..."
+          onfocus="this.select()"
+          autocomplete="off"
+        />
+      </form>
+
+      <span class="shield-pill" title="Iframe sandboxed with allow-scripts allow-same-origin allow-forms to block popups automatically">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10"/>
+        </svg>
+        Popups Blocked
+      </span>
+
+      <a id="nav-new-tab" class="btn" href="https://en.wikipedia.org" target="_blank" rel="noopener noreferrer" title="Open current page in a new browser tab">
+        <span class="hide-mobile">New Tab</span>
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
+        </svg>
+      </a>
+
+      <button class="btn btn-accent" onclick="toggleFocusMode()" title="Focus Mode: Study Notes & Wikipedia Summary (Esc)">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>
+        </svg>
+        <span class="hide-mobile">Focus Mode</span>
+        <span class="kbd-hint" style="background:rgba(15,23,42,0.45); color:#fff; border-color:rgba(255,255,255,0.2);">Esc</span>
+      </button>
+
+      <button class="btn btn-icon" onclick="toggleFullscreen()" title="Toggle Fullscreen">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>
+        </svg>
+      </button>
+
+      <div id="load-bar" class="load-bar"></div>
+    </nav>
+
+    <!-- X-Frame-Options Fallback Notice -->
+    <div id="fallback-banner" class="fallback-banner">
+      <div class="fallback-text">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;">
+          <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+        </svg>
+        <span id="fallback-message">
+          Some websites restrict iframe embedding via <strong>X-Frame-Options</strong> headers. If the frame below appears blank or refuses to connect, open it directly in a new tab.
+        </span>
+      </div>
+      <div class="fallback-actions">
+        <a id="fallback-new-tab" class="btn btn-accent" href="https://en.wikipedia.org" target="_blank" rel="noopener noreferrer" style="padding: 5px 12px; font-size: 12px;">
+          Open in New Tab ↗
+        </a>
+        <button id="fallback-dismiss" class="btn btn-icon" onclick="collapseFallbackBanner()" title="Minimize Notice" style="width:28px; height:28px;">
+          ✕
+        </button>
+      </div>
+    </div>
+
+    <div class="iframe-stage">
+      <iframe
+        id="web-frame"
+        sandbox="allow-scripts allow-same-origin allow-forms"
+        allow="fullscreen; autoplay; clipboard-read; clipboard-write"
+        referrerpolicy="no-referrer-when-downgrade"
+        onload="onFrameLoad()"
+      ></iframe>
+    </div>
+  </section>
+
+  <!-- ==================== 3. FOCUS MODE ==================== -->
+  <section id="view-focus" class="view">
+    <header class="focus-header">
+      <div class="focus-title-group">
+        <span class="focus-badge">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>
+          </svg>
+          Focus Mode
+        </span>
+        <span style="font-size:13px; color:var(--text-secondary);" class="hide-mobile">
+          Distraction-free Study Notes &amp; Instant Wikipedia Summary
+        </span>
+      </div>
+
+      <div style="display:flex; align-items:center; gap:8px;">
+        <button id="btn-return-viewer" class="btn" onclick="returnToViewer()" style="display:none;">
+          Return to Web Viewer
+        </button>
+        <button class="btn" onclick="showHome()">
+          Home Dashboard
+        </button>
+        <button class="btn btn-accent" onclick="toggleFocusMode()">
+          <span>Exit Focus</span>
+          <span class="kbd-hint" style="background:rgba(15,23,42,0.45); color:#fff; border-color:rgba(255,255,255,0.2);">Esc</span>
+        </button>
+      </div>
+    </header>
+
+    <div class="focus-workspace">
+      <!-- Left Panel: Client-Side Wikipedia Summary Reader -->
+      <div class="focus-panel">
+        <div class="panel-header">
+          <h2>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#818cf8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/>
+            </svg>
+            Wikipedia Quick Summary
+          </h2>
+          <button id="btn-insert-wiki" class="btn" onclick="insertSummaryToNotes()" style="padding: 4px 10px; font-size: 12px;" disabled>
+            + Insert into Notes
+          </button>
+        </div>
+
+        <form class="wiki-search-bar" onsubmit="handleWikiSearch(event)">
+          <input
+            id="wiki-query-input"
+            type="text"
+            placeholder="Search any concept (e.g., Photosynthesis, Pythagorean theorem)..."
+            autocomplete="off"
+          />
+          <button type="submit" class="btn btn-accent">Lookup</button>
+        </form>
+
+        <div id="wiki-summary-output" class="wiki-content">
+          <div class="wiki-article-title">Quick Reference Reader</div>
+          <div class="wiki-article-desc">100% Client-Side Wikipedia Summary Fetcher</div>
+          <p class="wiki-article-body">
+            Type any academic topic above to fetch a clean, distraction-free encyclopedia summary without leaving Focus Mode. You can insert key takeaways directly into your study notes on the right.
+          </p>
+        </div>
+      </div>
+
+      <!-- Right Panel: Auto-Saved Study Notes -->
+      <div class="focus-panel">
+        <div class="panel-header">
+          <h2>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#818cf8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/>
+            </svg>
+            Study Notes
+          </h2>
+          <div style="display:flex; gap:6px;">
+            <button class="btn" onclick="copyNotes()" style="padding: 4px 10px; font-size: 12px;">Copy</button>
+            <button class="btn" onclick="downloadNotes()" style="padding: 4px 10px; font-size: 12px;">Download .md</button>
+            <button class="btn" onclick="clearNotes()" style="padding: 4px 10px; font-size: 12px;">Clear</button>
+          </div>
+        </div>
+
+        <textarea
+          id="study-notes-area"
+          class="notes-textarea"
+          placeholder="Start typing your study notes, formulas, essay outlines, or key takeaways here... (Automatically saved in your browser)"
+          oninput="handleNotesInput()"
+        ></textarea>
+
+        <div class="panel-footer">
+          <span id="notes-save-status">Saved locally in browser</span>
+          <span id="notes-stats">0 words · 0 chars</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <script>
+    // ==================== STATE ====================
+    const STORAGE_KEY = "utopia_edu_study_notes_v1";
+    const KNOWN_FRAME_BLOCKERS = [
+      "khanacademy.org",
+      "google.com",
+      "youtube.com",
+      "quizlet.com",
+      "github.com",
+      "coursera.org",
+      "edx.org",
+      "purdue.edu",
+      "britannica.com",
+      "loc.gov"
+    ];
+
+    let activeView = "home";
+    let previousViewBeforeFocus = "home";
+    let navHistory = [];
+    let navIndex = -1;
+    let currentWikiSummary = null;
+
+    // ==================== DOM ELEMENTS ====================
+    const viewHome = document.getElementById("view-home");
+    const viewViewer = document.getElementById("view-viewer");
+    const viewFocus = document.getElementById("view-focus");
+    const webFrame = document.getElementById("web-frame");
+    const viewerUrlInput = document.getElementById("viewer-url-input");
+    const btnBack = document.getElementById("btn-back");
+    const loadBar = document.getElementById("load-bar");
+    const navNewTab = document.getElementById("nav-new-tab");
+    const fallbackBanner = document.getElementById("fallback-banner");
+    const fallbackMessage = document.getElementById("fallback-message");
+    const fallbackNewTab = document.getElementById("fallback-new-tab");
+    const fallbackDismiss = document.getElementById("fallback-dismiss");
+    const btnReturnViewer = document.getElementById("btn-return-viewer");
+    const notesArea = document.getElementById("study-notes-area");
+    const notesStats = document.getElementById("notes-stats");
+    const notesSaveStatus = document.getElementById("notes-save-status");
+
+    // ==================== VIEW SWITCHING ====================
+    function setActiveView(viewName) {
+      activeView = viewName;
+      viewHome.classList.toggle("active", viewName === "home");
+      viewViewer.classList.toggle("active", viewName === "viewer");
+      viewFocus.classList.toggle("active", viewName === "focus");
+
+      if (viewName === "focus") {
+        btnReturnViewer.style.display = navHistory.length > 0 ? "inline-flex" : "none";
+        autoSyncWikiFromCurrentUrl();
+        setTimeout(() => notesArea.focus(), 40);
+      }
+    }
+
+    function showHome() {
+      setActiveView("home");
+    }
+
+    function returnToViewer() {
+      if (navHistory.length > 0) {
+        setActiveView("viewer");
+      } else {
+        setActiveView("home");
+      }
+    }
+
+    function toggleFocusMode() {
+      if (activeView === "focus") {
+        setActiveView(previousViewBeforeFocus || "home");
+      } else {
+        previousViewBeforeFocus = activeView;
+        setActiveView("focus");
+      }
+    }
+
+    // Escape key shortcut for Focus Mode
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        toggleFocusMode();
+      }
+    });
+
+    // ==================== URL RESOLUTION & NAVIGATION ====================
+    function resolveInputToUrl(raw) {
+      const trimmed = (raw || "").trim();
+      if (!trimmed) return "https://en.wikipedia.org/wiki/Main_Page";
+
+      if (/^https?:\/\//i.test(trimmed)) {
+        return trimmed;
+      }
+
+      // Looks like a domain name (contains dot and no spaces)
+      if (!/\s/.test(trimmed) && /^[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)+/.test(trimmed)) {
+        return "https://" + trimmed;
+      }
+
+      // Treat search phrases as an embed-friendly Wikipedia search query
+      return "https://en.wikipedia.org/w/index.php?search=" + encodeURIComponent(trimmed);
+    }
+
+    function isLikelyBlockedDomain(url) {
+      try {
+        const hostname = new URL(url).hostname.toLowerCase();
+        return KNOWN_FRAME_BLOCKERS.some(
+          (domain) => hostname === domain || hostname.endsWith("." + domain)
+        );
+      } catch {
+        return false;
+      }
+    }
+
+    function updateFallbackBanner(url) {
+      fallbackNewTab.href = url;
+      navNewTab.href = url;
+
+      if (isLikelyBlockedDomain(url)) {
+        fallbackBanner.classList.remove("compact");
+        fallbackDismiss.style.display = "inline-flex";
+        fallbackMessage.innerHTML =
+          '<strong>Embedding Notice:</strong> This platform typically sets <strong>X-Frame-Options</strong> headers that block iframes. Click <strong>Open in New Tab ↗</strong> if the window below stays blank.';
+      } else {
+        fallbackBanner.classList.remove("compact");
+        fallbackDismiss.style.display = "inline-flex";
+        fallbackMessage.innerHTML =
+          'Some websites restrict iframe embedding via <strong>X-Frame-Options</strong> headers. If the page below refuses to connect, open it directly in a new tab.';
+      }
+    }
+
+    function collapseFallbackBanner() {
+      fallbackBanner.classList.add("compact");
+      fallbackDismiss.style.display = "none";
+      fallbackMessage.innerHTML =
+        "Viewing in sandboxed mode. Blocked by X-Frame-Options?";
+    }
+
+    function openResource(rawInput, pushHistory = true) {
+      const targetUrl = resolveInputToUrl(rawInput);
+
+      if (pushHistory) {
+        if (navIndex < navHistory.length - 1) {
+          navHistory = navHistory.slice(0, navIndex + 1);
         }
-    else:
-        page_data = fetch_and_clean_page(
-            target_url,
-            st.session_state.adblock_enabled,
-            st.session_state.reload_nonce,
-        )
+        if (navHistory[navIndex] !== targetUrl) {
+          navHistory.push(targetUrl);
+          navIndex = navHistory.length - 1;
+        }
+      }
 
-    active_mode = str(page_data.get("mode", "proxy"))
-    blocked_count = int(page_data.get("blocked_count", 0))
+      btnBack.disabled = navIndex <= 0;
+      viewerUrlInput.value = targetUrl;
+      updateFallbackBanner(targetUrl);
 
-    render_top_browser_bar(blocked_count=blocked_count, active_mode=active_mode)
+      setActiveView("viewer");
+      startLoadingAnimation();
+      webFrame.src = targetUrl;
+    }
 
-    if active_mode == "proxy" and page_data.get("html"):
-        components.html(
-            str(page_data["html"]),
-            height=850,
-            scrolling=True,
-        )
-    else:
-        safe_iframe_url = html.escape(str(page_data.get("url", target_url)), quote=True)
-        fallback_frame_html = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <meta charset="utf-8" />
-          <style>
-            html, body {{
-              margin: 0;
-              padding: 0;
-              width: 100%;
-              height: 100%;
-              overflow: hidden;
-              background: #0f172a;
-            }}
-            iframe {{
-              width: 100%;
-              height: 850px;
-              border: none;
-              display: block;
-              background: #ffffff;
-            }}
-          </style>
-          <script>
-            window.addEventListener("keydown", function(e) {{
-              if (e.key === "Escape" || e.key === "~" || e.key === "`") {{
-                e.preventDefault();
-                try {{
-                  if (window.parent && typeof window.parent.__utopiaTogglePanic === "function") {{
-                    window.parent.__utopiaTogglePanic(true);
-                  }}
-                }} catch (err) {{}}
-              }}
-            }}, true);
-          </script>
-        </head>
-        <body>
-          <iframe
-            src="{safe_iframe_url}"
-            sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
-            allowfullscreen
-            loading="eager"
-          ></iframe>
-        </body>
-        </html>
-        """
-        components.html(
-            fallback_frame_html,
-            height=850,
-            scrolling=False,
-        )
+    function handleHomeSearch(event) {
+      event.preventDefault();
+      const input = document.getElementById("home-search-input");
+      openResource(input.value, true);
+    }
 
+    function handleNavbarSubmit(event) {
+      event.preventDefault();
+      openResource(viewerUrlInput.value, true);
+    }
 
-# -----------------------------------------------------------------------------
-# 7. MAIN APPLICATION ENTRYPOINT
-# -----------------------------------------------------------------------------
-def main() -> None:
-    init_session_state()
-    handle_query_param_navigation()
-    inject_global_styles()
-    inject_panic_hotkey_engine()
+    function goBack() {
+      if (navIndex > 0) {
+        navIndex -= 1;
+        openResource(navHistory[navIndex], false);
+      }
+    }
 
-    if st.session_state.panic_active:
-        render_panic_decoy_view()
-    elif st.session_state.view_mode == "browser" and st.session_state.current_url:
-        render_web_viewer()
-    else:
-        render_home_screen()
+    function reloadFrame() {
+      if (navIndex >= 0 && navHistory[navIndex]) {
+        startLoadingAnimation();
+        webFrame.src = navHistory[navIndex];
+      }
+    }
 
+    function startLoadingAnimation() {
+      loadBar.classList.remove("done");
+      loadBar.classList.add("loading");
+    }
 
-if __name__ == "__main__":
-    main()
+    function onFrameLoad() {
+      loadBar.classList.remove("loading");
+      loadBar.classList.add("done");
+      setTimeout(() => loadBar.classList.remove("done"), 300);
+    }
+
+    function toggleFullscreen() {
+      const elem = document.documentElement;
+      if (!document.fullscreenElement) {
+        if (elem.requestFullscreen) {
+          elem.requestFullscreen().catch(() => {});
+        }
+      } else if (document.exitFullscreen) {
+        document.exitFullscreen().catch(() => {});
+      }
+    }
+
+    // ==================== FOCUS MODE: WIKIPEDIA SUMMARY ====================
+    function autoSyncWikiFromCurrentUrl() {
+      if (navIndex < 0) return;
+      const currentUrl = navHistory[navIndex];
+      try {
+        const parsed = new URL(currentUrl);
+        if (parsed.hostname.includes("wikipedia.org")) {
+          if (parsed.pathname.startsWith("/wiki/")) {
+            const rawTitle = decodeURIComponent(parsed.pathname.replace("/wiki/", "")).replace(/_/g, " ");
+            if (rawTitle && !rawTitle.startsWith("Main Page") && !rawTitle.startsWith("Portal:")) {
+              document.getElementById("wiki-query-input").value = rawTitle;
+              fetchWikipediaSummary(rawTitle);
+            }
+          } else if (parsed.searchParams.get("search")) {
+            const q = parsed.searchParams.get("search");
+            document.getElementById("wiki-query-input").value = q;
+            fetchWikipediaSummary(q);
+          }
+        }
+      } catch {
+        // Ignore invalid URLs
+      }
+    }
+
+    function handleWikiSearch(event) {
+      event.preventDefault();
+      const query = document.getElementById("wiki-query-input").value.trim();
+      if (query) {
+        fetchWikipediaSummary(query);
+      }
+    }
+
+    async function fetchWikipediaSummary(query) {
+      const output = document.getElementById("wiki-summary-output");
+      const insertBtn = document.getElementById("btn-insert-wiki");
+      insertBtn.disabled = true;
+      currentWikiSummary = null;
+
+      output.innerHTML = `<p style="color:var(--text-secondary);">Searching Wikipedia for <strong>${escapeHtml(query)}</strong>...</p>`;
+
+      try {
+        // First resolve best matching title via CORS-enabled OpenSearch API
+        const searchEndpoint =
+          "https://en.wikipedia.org/w/api.php?action=opensearch&limit=1&namespace=0&format=json&origin=*&search=" +
+          encodeURIComponent(query);
+        const searchRes = await fetch(searchEndpoint);
+        const searchData = await searchRes.json();
+        const matchedTitle = (searchData && searchData[1] && searchData[1][0]) ? searchData[1][0] : query;
+
+        // Fetch clean REST API summary
+        const summaryEndpoint =
+          "https://en.wikipedia.org/api/rest_v1/page/summary/" + encodeURIComponent(matchedTitle);
+        const res = await fetch(summaryEndpoint);
+        if (!res.ok) throw new Error("Article not found");
+        const data = await res.json();
+
+        currentWikiSummary = {
+          title: data.title || matchedTitle,
+          description: data.description || "Wikipedia Encyclopedia Summary",
+          extract: data.extract || "No summary text available for this entry.",
+          url: (data.content_urls && data.content_urls.desktop && data.content_urls.desktop.page) ||
+               "https://en.wikipedia.org/wiki/" + encodeURIComponent(matchedTitle)
+        };
+
+        output.innerHTML = `
+          <div class="wiki-article-title">${escapeHtml(currentWikiSummary.title)}</div>
+          <div class="wiki-article-desc">${escapeHtml(currentWikiSummary.description)}</div>
+          <p class="wiki-article-body">${escapeHtml(currentWikiSummary.extract)}</p>
+          <button class="btn" onclick="openResource('${currentWikiSummary.url.replace(/'/g, "\\'")}')">
+            Open Full Article in Viewer
+          </button>
+        `;
+        insertBtn.disabled = false;
+      } catch {
+        output.innerHTML = `
+          <div class="wiki-article-title">No Exact Match Found</div>
+          <p class="wiki-article-body">
+            Could not retrieve an instant summary for "<strong>${escapeHtml(query)}</strong>". Try a broader keyword or open a full Wikipedia search in the viewer.
+          </p>
+        `;
+      }
+    }
+
+    function insertSummaryToNotes() {
+      if (!currentWikiSummary) return;
+      const snippet = `\n\n### ${currentWikiSummary.title}\n${currentWikiSummary.extract}\n(Source: ${currentWikiSummary.url})\n`;
+      notesArea.value = (notesArea.value.trimEnd() + snippet).trimStart();
+      handleNotesInput();
+      notesArea.scrollTop = notesArea.scrollHeight;
+    }
+
+    function escapeHtml(str) {
+      return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    // ==================== FOCUS MODE: STUDY NOTES ====================
+    function loadSavedNotes() {
+      try {
+        const saved = localStorage.getItem(STORAGE_KEY);
+        if (saved !== null) {
+          notesArea.value = saved;
+        }
+      } catch {
+        // Ignore storage restrictions
+      }
+      updateNotesStats();
+    }
+
+    function handleNotesInput() {
+      try {
+        localStorage.setItem(STORAGE_KEY, notesArea.value);
+        notesSaveStatus.textContent = "Saved locally · " + new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      } catch {
+        notesSaveStatus.textContent = "Session memory only";
+      }
+      updateNotesStats();
+    }
+
+    function updateNotesStats() {
+      const text = notesArea.value;
+      const words = text.trim() ? text.trim().split(/\s+/).length : 0;
+      notesStats.textContent = `${words} words · ${text.length} chars`;
+    }
+
+    function copyNotes() {
+      if (!notesArea.value) return;
+      navigator.clipboard?.writeText(notesArea.value);
+      notesSaveStatus.textContent = "Copied to clipboard!";
+    }
+
+    function downloadNotes() {
+      const blob = new Blob([notesArea.value || "# Study Notes\n"], { type: "text/markdown;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "utopia-study-notes.md";
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    function clearNotes() {
+      if (!notesArea.value) return;
+      notesArea.value = "";
+      handleNotesInput();
+    }
+
+    // Initialize saved notes on startup
+    loadSavedNotes();
+  </script>
+</body>
+</html>
+"""
+
+components.html(HTML_APP, height=950, scrolling=False)
